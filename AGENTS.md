@@ -42,8 +42,11 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
 
 - **`lidar_z` in four places must match:** `start.sh lidar_z:=` (→ `nav.launch.py` static TF and
   `perception.launch.py`, which computes nvblox's slice band), `nav2_params.yaml`
-  (`min/max_obstacle_height`, both costmaps), `pcd2pgm_live.yaml` (`thre_z_min/max`). Heights are
-  relative to GLIM's `map` z=0, the LiDAR's start height; the ground is at −`lidar_z`.
+  (`min/max_obstacle_height`, both costmaps, on the obstacle layer and on its `lidar` source: the
+  layer's own minimum defaults to 0.0 and would drop everything below the LiDAR; the voxel
+  layer's `origin_z` = the minimum),
+  `pcd2pgm_live.yaml` (`thre_z_min/max`). Heights are relative to GLIM's `map` z=0, the LiDAR's
+  start height; the ground is at −`lidar_z`.
 - **TF chain `map → odom → base_link → {livox_frame, zed_camera_link}`.** GLIM publishes the first
   two links; both mount links are static, from `nav.launch.py`. The ZED must never track or publish
   TF (`kratos_perception/config/zed2i_glim.yaml`). Without `base_link → livox_frame`, GLIM
@@ -67,6 +70,8 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
   `vx_min: 0.0`). Controller: RotationShim around MPPI; MPPI's `model_dt` must equal
   1 / `controller_frequency`. `lattice_filepath` is filled in by `nav.launch.py`, and
   `config/lattice/output.json` must match the costmap resolution (0.05).
+- **The LiDAR costmap layer is a `VoxelLayer`** (3D clearing). With `ObstacleLayer` beams that pass
+  over a low obstacle erase it from the costmap as the rover gets close.
 - **LiDAR-only (`depth:=none`):** `kratos.launch.py` passes `use_nvblox:=false` to Nav2,
   which removes the nvblox local costmap plugin from a temporary params copy. The source
   YAML stays intact for camera runs.

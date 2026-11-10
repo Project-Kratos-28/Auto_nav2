@@ -1,0 +1,5 @@
+<library path="traversability_layer">
+  <class type="kratos_traversability::TraversabilityLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Copies /traversability/grid (from traversability_mapper) into the costmap, taking the maximum.</description>
+  </class>
+</library>

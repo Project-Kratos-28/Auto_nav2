@@ -9,7 +9,7 @@ Every obstacle height band is 0.2 m to 1.8 m above ground, i.e. `0.2 − lidar_z
 | Where | What |
 |---|---|
 | `start.sh lidar_z:=` (→ `nav.launch.py`, `perception.launch.py`) | static TF; nvblox slice band (computed) |
-| `src/kratos_nav/config/nav2_params.yaml` | `min_obstacle_height` / `max_obstacle_height`, both costmaps |
+| `src/kratos_nav/config/nav2_params.yaml` | `min_obstacle_height` / `max_obstacle_height`, both costmaps, twice each: on `obstacle_layer` (its own minimum defaults to 0.0, which drops everything below the LiDAR) and on its `lidar` source; plus the voxel grid's `origin_z` (= the minimum; 16 × 0.1 m voxels reach the maximum) |
 | `src/pcd2pgm/config/pcd2pgm_live.yaml` | `thre_z_min` / `thre_z_max` |
 
 Symptom of a wrong value: the floor shows as obstacles, or low obstacles are missing.
