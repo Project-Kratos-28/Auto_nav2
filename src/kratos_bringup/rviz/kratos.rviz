@@ -1,0 +1,199 @@
+# kratos_bringup RViz: GLIM map, pcd2pgm /map, costmaps (local = LiDAR + nvblox), nvblox mesh,
+# plan, ESS depth and ZED color. "2D Goal Pose" (/goal_pose) sends a Nav2 goal.
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+- Class: rviz_common/Views
+  Name: Views
+- Class: rviz_common/Tool Properties
+  Name: Tool Properties
+Visualization Manager:
+  Class: ''
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Name: Grid
+    Enabled: true
+    Reference Frame: map
+    Cell Size: 1.0
+    Plane Cell Count: 50
+    Color: 160; 160; 164
+    Alpha: 0.3
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: true
+    Show Names: true
+    Marker Scale: 0.5
+    Frames:
+      All Enabled: false
+      map:
+        Value: true
+      odom:
+        Value: true
+      base_link:
+        Value: true
+      livox_frame:
+        Value: true
+      zed_camera_link:
+        Value: true
+  - Class: rviz_default_plugins/Map
+    Name: Map (pcd2pgm /map)
+    Enabled: true
+    Alpha: 0.6
+    Color Scheme: map
+    Topic:
+      Value: /map
+      Depth: 1
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Transient Local
+  - Class: rviz_default_plugins/Map
+    Name: Global costmap
+    Enabled: false
+    Alpha: 0.4
+    Color Scheme: costmap
+    Topic:
+      Value: /global_costmap/costmap
+      Depth: 1
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Transient Local
+  - Class: rviz_default_plugins/Map
+    Name: Local costmap (LiDAR + nvblox)
+    Enabled: true
+    Alpha: 0.7
+    Color Scheme: costmap
+    Topic:
+      Value: /local_costmap/costmap
+      Depth: 1
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Transient Local
+  - Class: rviz_default_plugins/PointCloud2
+    Name: GLIM map
+    Enabled: true
+    Size (m): 0.05
+    Style: Points
+    Size (Pixels): 2
+    Color Transformer: AxisColor
+    Axis: Z
+    Decay Time: 0
+    Topic:
+      Value: /glim_ros/map
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+  - Class: rviz_default_plugins/PointCloud2
+    Name: LiDAR (raw)
+    Enabled: false
+    Style: Points
+    Size (Pixels): 2
+    Color Transformer: Intensity
+    Channel Name: intensity
+    Decay Time: 0
+    Topic:
+      Value: /livox/lidar
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+  - Class: nvblox_rviz_plugin/NvbloxMesh
+    Name: nvblox mesh
+    Enabled: true
+    Topic:
+      Value: /nvblox_node/mesh
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+  - Class: rviz_default_plugins/PointCloud2
+    Name: nvblox ESDF slice
+    Enabled: false
+    Style: Flat Squares
+    Size (m): 0.03
+    Color Transformer: Intensity
+    Channel Name: intensity
+    Decay Time: 0
+    Topic:
+      Value: /nvblox_node/static_esdf_pointcloud
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+  - Class: rviz_default_plugins/Marker
+    Name: nvblox slice bounds
+    Enabled: false
+    Topic:
+      Value: /nvblox_node/esdf_slice_bounds
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+  - Class: rviz_default_plugins/Path
+    Name: Plan
+    Enabled: true
+    Color: 25; 255; 0
+    Topic:
+      Value: /plan
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+  - Class: rviz_default_plugins/Image
+    Name: Depth (ESS)
+    Enabled: true
+    Topic:
+      Value: /ess/depth
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Normalize Range: false
+    Min Value: 0
+    Max Value: 5000
+  - Class: rviz_default_plugins/Image
+    Name: Depth (ZED)
+    Enabled: true
+    Topic:
+      Value: /zed/zed_node/depth/depth_registered
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+    Normalize Range: false
+    Min Value: 0.3
+    Max Value: 10
+  - Class: rviz_default_plugins/Image
+    Name: ZED color
+    Enabled: true
+    Topic:
+      Value: /zed/zed_node/rgb/color/rect/image
+      Depth: 5
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+  - Class: rviz_default_plugins/Interact
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Measure
+  - Class: rviz_default_plugins/SetGoal
+    Topic:
+      Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Target Frame: base_link
+      Distance: 12.0
+      Pitch: 0.8
+      Yaw: 3.14
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+Window Geometry:
+  Width: 1600
+  Height: 1000

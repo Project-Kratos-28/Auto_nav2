@@ -1,0 +1,27 @@
+# nvblox for the Kratos rover: ZED 2i depth only, posed by GLIM's TF.
+# Applied on top of NVIDIA's nvblox_base.yaml + specializations/nvblox_zed.yaml.
+# The ESDF slice heights (the obstacle band) are NOT set here: perception.launch.py computes
+# them from lidar_z so they always match nav2_params.yaml and pcd2pgm_live.yaml.
+/**:
+  ros__parameters:
+    global_frame: odom            # GLIM's odom: smooth. Not map: loop closures move map->odom
+    map_clearing_frame_id: base_link
+    map_clearing_radius_m: 8.0    # forget what is behind; the local costmap is 6x6 m
+    esdf_slice_bounds_visualization_attachment_frame_id: base_link
+    workspace_height_bounds_visualization_attachment_frame_id: base_link
+
+    voxel_size: 0.03              # 3 cm: ~3x less GPU work than 2 cm; the costmap is 5 cm anyway
+    use_depth: true
+    use_color: false              # color only paints the mesh; the costmap does not use it
+    use_lidar: false              # the MID-360 goes to GLIM and Nav2's obstacle_layer, not nvblox
+    input_qos: "SENSOR_DATA"
+
+    integrate_depth_rate_hz: 15.0
+    update_esdf_rate_hz: 10.0
+    update_mesh_rate_hz: 2.0      # visualization only
+    publish_layer_rate_hz: 2.0
+    maximum_input_queue_length: 10   # depth waits here until GLIM's TF for its stamp arrives
+
+    static_mapper:
+      projective_integrator_max_integration_distance_m: 5.0   # the LiDAR covers farther
+      projective_integrator_truncation_distance_vox: 4.0      # 12 cm band at 3 cm voxels

@@ -1,0 +1,21 @@
+diff --git a/src/glim/odometry/odometry_estimation_imu.cpp b/src/glim/odometry/odometry_estimation_imu.cpp
+index cd71721..32cf580 100644
+--- a/src/glim/odometry/odometry_estimation_imu.cpp
++++ b/src/glim/odometry/odometry_estimation_imu.cpp
+@@ -250,8 +250,14 @@ EstimationFrame::ConstPtr OdometryEstimationIMU::insert_frame(const Preprocessed
+ 
+   // Overwrite the predicted state with the last states if no IMU data is available
+   if (num_imu_integrated < 2 && last > 1) {
+-    const Eigen::Isometry3d T_delta = frames[last - 1]->T_world_imu.inverse() * frames[last]->T_world_imu;
+-    predicted_T_world_imu = gtsam::Pose3((frames[last]->T_world_imu * T_delta).matrix());
++    // A long sensor gap can leave only the latest frame in the sliding window.
++    // In that case, hold the last pose instead of indexing a marginalized frame.
++    if (frames.inner_size() > 1) {
++      const Eigen::Isometry3d T_delta = frames[last - 1]->T_world_imu.inverse() * frames[last]->T_world_imu;
++      predicted_T_world_imu = gtsam::Pose3((frames[last]->T_world_imu * T_delta).matrix());
++    } else {
++      predicted_T_world_imu = last_T_world_imu;
++    }
+     predicted_v_world_imu = frames[last]->v_world_imu;
+     predicted_nav_world_imu = gtsam::NavState(predicted_T_world_imu, predicted_v_world_imu);
+   }

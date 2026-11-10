@@ -1,0 +1,399 @@
+# Nav2 params for Kratos on a LIVE GLIM map (ROS 2 Jazzy, Nav2 1.3).
+#
+# Who publishes what (nothing here may duplicate it):
+#   GLIM            TF map -> odom -> base_link   (replaces AMCL + wheel odom)
+#   nav.launch.py   TF base_link -> livox_frame   (static, LiDAR mount)
+#   pcd2pgm live    /map  OccupancyGrid           (replaces map_server)
+#   driver          /livox/lidar  PointCloud2     (live obstacles)
+#   nvblox          /nvblox_node/static_map_slice (ZED 2i depth, near-field obstacles,
+#                   local AND global costmap; kratos_perception/launch/perception.launch.py)
+#
+# HEIGHT NUMBERS: GLIM's odom/map origin is where the LiDAR started, NOT the
+# ground. We put base_link ON THE GROUND directly under the LiDAR, so
+# lidar_z (nav.launch.py) = measured LiDAR height above ground, and the
+# ground sits at z = -lidar_z in map/odom. Placeholder lidar_z = 0.60, so
+# "0.2 m to 1.8 m above ground" becomes min -0.40 / max 1.20 below.
+# Measure the real rover: min = 0.2 - lidar_z, max = 1.8 - lidar_z.
+# pcd2pgm_live.yaml thre_z_min/thre_z_max MUST use the same two numbers.
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /glim_ros/odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # nav.launch.py replaces these two with absolute paths to our no-spin trees.
+    # The keys MUST exist here: RewrittenYaml only replaces keys it finds, and
+    # a missing key silently falls back to the stock trees (which need Spin).
+    default_nav_to_pose_bt_xml: "set_by_nav_launch"
+    default_nav_through_poses_bt_xml: "set_by_nav_launch"
+    wait_for_service_timeout: 1000
+    action_server_result_timeout: 900.0
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    # Jazzy adds Nav2's built-in BT plugins automatically. plugin_lib_names is only for
+    # custom plugins; listing the built-ins again (as the Humble file did) is not needed.
+    error_code_names:
+      - compute_path_error_code
+      - follow_path_error_code
+
+# ---------------------------------------------------------------------------
+# Controller: follows the path, outputs cmd_vel (linear.x + angular.z only).
+# Skid-steer (differential drive) rocker-bogie. RotationShim pivots slowly
+# (0.3 rad/s) toward the path ONCE per new goal if it starts > 45 deg off the
+# heading, then hands over to MPPI. MPPI samples velocity sequences, scores them
+# against the local costmap and the path, and may turn in place when that scores
+# best. It never reverses (vx_min 0.0). Limits match the velocity smoother
+# (0.5 m/s, 0.5 rad/s, 1.0 m/s^2, 1.0 rad/s^2).
+# model_dt MUST equal 1 / controller_frequency (0.1 s at 10 Hz).
+# CPU cost grows with batch_size x time_steps: if controller_server warns that it
+# misses its 10 Hz rate on the Orin, lower batch_size first.
+# ---------------------------------------------------------------------------
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.0
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    odom_topic: /glim_ros/odom
+    progress_checker_plugins: ["progress_checker"]   # Jazzy: list (Humble: progress_checker_plugin)
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 15.0
+
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: true
+      xy_goal_tolerance: 0.5
+      # Final heading doesn't matter for the mission: don't pivot at the goal.
+      yaw_goal_tolerance: 6.28
+
+    FollowPath:
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_mppi_controller::MPPIController"
+      angular_dist_threshold: 0.785
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.3
+      max_angular_accel: 1.0
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: false    # final heading doesn't matter
+      rotate_to_heading_once: true     # only for a new goal, not on every replan
+      # MPPI (primary_controller) parameters:
+      motion_model: "DiffDrive"
+      time_steps: 56                   # 5.6 s horizon (2.8 m at 0.5 m/s, inside the 6x6 m local costmap)
+      model_dt: 0.1
+      batch_size: 1000
+      iteration_count: 1
+      temperature: 0.3
+      gamma: 0.015
+      vx_max: 0.5
+      vx_min: 0.0                      # rover must NEVER reverse
+      vy_max: 0.0
+      wz_max: 0.5
+      ax_max: 1.0
+      ax_min: -1.0
+      ay_max: 0.0
+      ay_min: 0.0
+      az_max: 1.0
+      vx_std: 0.2
+      vy_std: 0.0
+      wz_std: 0.4
+      prune_distance: 3.0
+      transform_tolerance: 0.3
+      enforce_path_inversion: false
+      retry_attempt_limit: 1
+      regenerate_noises: false
+      reset_period: 1.0
+      visualize: false                 # true: publishes sampled trajectories (CPU cost)
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic"]
+      # No GoalAngleCritic: the final heading doesn't matter (yaw_goal_tolerance 6.28).
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true       # rectangular 1.3 x 1.2 m footprint
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0                        # forward preference (never drive the path backwards)
+
+# ---------------------------------------------------------------------------
+# Local costmap: small window that follows the rover, LIVE LiDAR only.
+# ---------------------------------------------------------------------------
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      # Wait up to 10 min for GLIM's map -> odom -> base_link at startup (default 60 s).
+      # GLIM publishes TF only once the LiDAR streams and its IMU init is done; the
+      # MID-360 can take minutes to start streaming, and if Nav2 gives up it never
+      # retries (a lifecycle reset can't reload nvblox_layer: restart the stack).
+      initial_transform_timeout: 600.0
+      rolling_window: true
+      width: 6
+      height: 6
+      resolution: 0.05
+      transform_tolerance: 0.3
+      # Measured outline 1.3 m long x 1.2 m wide, base_link at its centre.
+      # Wheelbase 37 in, track ~35.5 in. Padding 5 cm on every side.
+      footprint: "[[0.65, 0.60], [0.65, -0.60], [-0.65, -0.60], [-0.65, 0.60]]"
+      footprint_padding: 0.05
+      # nvblox_layer: ZED 2i depth fused by nvblox (2D ESDF slice of GLIM's odom frame).
+      # Sees what the MID-360 cannot: low obstacles within ~5 m (its beams only reach the
+      # ground ~4.9 m out at lidar_z 0.60) and anything closer than obstacle_min_range.
+      plugins: ["obstacle_layer", "nvblox_layer", "inflation_layer"]
+
+      nvblox_layer:
+        plugin: "nvblox::nav2::NvbloxCostmapLayer"
+        enabled: true
+        nav2_costmap_global_frame: odom      # = this costmap's global_frame and nvblox's global_frame
+        nvblox_map_slice_topic: "/nvblox_node/static_map_slice"
+        convert_to_binary_costmap: true      # slice distance <= 0 (inside an obstacle) -> lethal
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: lidar
+        lidar:
+          # Raw driver cloud, not /livox/lidar_filtered: the angle filter cuts a
+          # 30 deg cone straight AHEAD, which would make the rover blind to what
+          # it drives into. Self-hits on the rover body are dropped by
+          # obstacle_min_range instead (0.8 m; nvblox covers the near field).
+          # The body's corners reach ~0.89 m from the LiDAR: if a permanent blob
+          # sticks to the rover in RViz, raise obstacle_min_range.
+          topic: /livox/lidar_filtered
+          data_type: "PointCloud2"
+          marking: true
+          clearing: true
+          min_obstacle_height: -0.40  # ground + 0.2 m (see HEIGHT NUMBERS)
+          max_obstacle_height: 1.20    # ground + 1.8 m
+          obstacle_min_range: 0.5
+          obstacle_max_range: 5.0
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
+          expected_update_rate: 0.0
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Local costmap = MPPI's CostCritic. Cost must fall off fast: with scaling 1.0 every cell
+        # within 1 m of an obstacle is expensive, and MPPI crawls at ~0.02 m/s next to one
+        # (Isaac Sim test). The global costmap keeps 1.0 so Smac still plans a wide berth.
+        inflation_radius: 1.0
+        cost_scaling_factor: 5.0
+
+      always_send_full_costmap: true
+
+# ---------------------------------------------------------------------------
+# Global costmap: whole arena. static_layer = GLIM's map (pcd2pgm's live /map).
+# obstacle_layer (LiDAR) and nvblox_layer (ZED depth) on top so things the 10 s
+# map hasn't caught yet, or the MID-360 can't see, still show to the planner.
+# ---------------------------------------------------------------------------
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      initial_transform_timeout: 600.0   # see local_costmap
+      resolution: 0.05                 # must equal pcd2pgm map_resolution
+      track_unknown_space: true
+      transform_tolerance: 0.3
+      footprint: "[[0.65, 0.60], [0.65, -0.60], [-0.65, -0.60], [-0.65, 0.60]]"
+      footprint_padding: 0.05
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /map
+        # pcd2pgm publishes /map reliable + transient_local; must match or
+        # the subscription silently never connects.
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: lidar
+        lidar:
+          topic: /livox/lidar_filtered
+          data_type: "PointCloud2"
+          marking: true
+          clearing: true
+          min_obstacle_height: -0.40
+          max_obstacle_height: 1.20
+          obstacle_min_range: 0.5
+          obstacle_max_range: 5.0
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
+          expected_update_rate: 0.0
+
+      # Same nvblox slice as the local costmap. The slice is in odom; the layer looks up
+      # map -> odom from GLIM's TF and merges with max, so it never erases the GLIM map.
+      # GLIM's map -> odom is 3D (small z/tilt), so expect a throttled "must be 2d, but it
+      # is 3d" warning: harmless, the layer projects it onto the ground plane.
+      # nvblox_layer:
+      #   plugin: "nvblox::nav2::NvbloxCostmapLayer"
+      #   enabled: true
+      #   nav2_costmap_global_frame: map       # = this costmap's global_frame (slice stays in odom)
+      #   nvblox_map_slice_topic: "/nvblox_node/static_map_slice"
+      #   convert_to_binary_costmap: true
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # > circumscribed radius (~0.96 m incl. padding) so Smac keeps clear of obstacles;
+        # low scaling factor = cost falls off slowly = wide berth.
+        inflation_radius: 1.0
+        cost_scaling_factor: 1.0
+
+      always_send_full_costmap: true
+
+# ---------------------------------------------------------------------------
+# Planner: Smac State Lattice. Paths are built only from the motion primitives
+# in config/lattice/output.json (diff drive: arcs, straights, pivots in place),
+# generated for THIS costmap resolution (0.05) and a 1.0 m arc radius. Change
+# either and regenerate: see config/lattice/README.md.
+# ---------------------------------------------------------------------------
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlannerLattice"
+      # nav.launch.py replaces this with the absolute path to config/lattice/output.json.
+      # The key MUST exist here (RewrittenYaml only replaces keys it finds).
+      lattice_filepath: "set_by_nav_launch"
+      tolerance: 0.5
+      # Most of the arena is unknown until you've driven it; allow planning
+      # through unknown or every far waypoint fails.
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 3.0
+      allow_reverse_expansion: false     # rover must NEVER reverse
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      reverse_penalty: 2.0               # unused while allow_reverse_expansion is false
+      change_penalty: 0.05
+      non_straight_penalty: 1.2
+      cost_penalty: 2.5                  # prefer paths away from obstacles
+      rotation_penalty: 10.0             # pivots are slow and scrub wheels: last resort
+      retrospective_penalty: 0.015
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: false
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    local_costmap_topic: local_costmap/costmap_raw         # Jazzy names (Humble: costmap_topic,
+    global_costmap_topic: global_costmap/costmap_raw       #   footprint_topic, global_frame)
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["wait"]   # no backup (never reverse), no spin, no drive_on_heading
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.3
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.0
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: false
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 2000
+
+# Final stage before the wheels: caps speed/accel, outputs /cmd_vel.
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.0, 0.5]
+    min_velocity: [0.0, 0.0, -0.5]   # linear.x >= 0: never reverse
+    max_accel: [1.0, 0.0, 1.0]
+    max_decel: [-1.0, 0.0, -1.0]
+    odom_topic: /glim_ros/odom
+    odom_duration: 0.1
+    # Commands below 0.05 m/s become 0 (MPPI slows smoothly near obstacles and goals).
+    deadband_velocity: [0.05, 0.0, 0.0]
+    velocity_timeout: 1.0

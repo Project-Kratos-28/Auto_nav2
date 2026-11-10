@@ -1,0 +1,23 @@
+pcd2pgm:
+  ros__parameters:
+    # Point cloud to convert (file mode), e.g. a GLIM dump exported with glim_dump_export
+    pcd_file: "/path/to/map.pcd"
+    
+    # 2D Grid map resolution (meters per pixel, 0.05 = 5cm per pixel)
+    map_resolution: 0.05
+    
+    # Topic to publish the 2D OccupancyGrid
+    map_topic_name: "map"
+    
+    # Coordinate transform [x, y, z, roll, pitch, yaw] from odom to lidar
+    odom_to_lidar_odom: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Z-axis passthrough filter:
+    # Note: flag_pass_through: false means keep points INSIDE [thre_z_min, thre_z_max] (PCL setNegative=false)
+    flag_pass_through: false
+    thre_z_min: 0.2     # Height above ground where obstacles start (e.g. 0.2m)
+    thre_z_max: 1.8     # Max height of obstacles (e.g. 1.8m)
+    
+    # Radius Outlier Removal (filters isolated LiDAR noise points)
+    thre_radius: 0.5
+    thres_point_count: 5

@@ -1,0 +1,22 @@
+lidar_angle_filter:
+  ros__parameters:
+    input_topic: /livox/lidar
+    output_topic: /livox/lidar_filtered
+    # Degrees in the LiDAR XY plane. Zero is +X; positive angles rotate toward +Y.
+    front_center_deg: 0.0
+    # Each value is the full excluded width, not the half-angle.
+    front_sector_deg: 30.0
+    back_sector_deg: 30.0
+    # Scan gate. GLIM aborts when a scan has nothing left after its own filtering
+    # (LiDAR covered by a hand, body or laptop). Scans with fewer than
+    # min_usable_points points at least min_usable_range m away are dropped, so
+    # GLIM never sees them. A normal MID-360 scan has ~20000 points. 0 disables.
+    min_usable_points: 120
+    min_usable_range: 0.7
+    # Vertical window, degrees above the sensor's horizontal plane (MID-360 sees about
+    # -7 to +52). Points outside it never reach GLIM, all 360 deg around.
+    # -90 / 90 keeps every point: this is the ROVER setting (it needs the ground and
+    # obstacles below the sensor). For a HANDHELD test with the sensor held overhead,
+    # 5 / 53 drops the person carrying it.
+    min_elevation_deg: -90.0
+    max_elevation_deg: 90.0

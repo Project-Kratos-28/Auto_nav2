@@ -1,0 +1,21 @@
+# Copied from ~/kratos_nvblox/config/ess_zed2i.yaml (ESS tuning for the ZED 2i); keep in sync.
+# engine/plugin and the node itself come from ~/kratos_nvblox/ess (mounted at /workspaces/kratos_nvblox).
+# ESS on the ZED 2i's rectified gray pair (1280x720 -> 960x576 network). Baseline (12 cm)
+# comes from the right camera_info P[3]. Same tuning as config/ess.yaml (D435i) except range:
+# the 12 cm baseline keeps disparity error low further out than the D435i's 5 cm.
+ess_stereo:
+  ros__parameters:
+    left_topic: /zed/zed_node/left/gray/rect/image
+    right_topic: /zed/zed_node/right/gray/rect/image
+    left_info_topic: /zed/zed_node/left/gray/rect/camera_info
+    right_info_topic: /zed/zed_node/right/gray/rect/camera_info
+    engine_path: /workspaces/kratos_nvblox/ess/engines/ess_fp16.engine
+    plugin_path: /workspaces/kratos_nvblox/ess/plugins/ess_plugins.so
+    input_norm: stretch
+    tta: true
+    tta_tolerance_px: 2.0
+    confidence_threshold: 0.1
+    edge_disparity_px: 1.0
+    min_depth_m: 0.3
+    max_depth_m: 10.0
+    baseline_m: 0.0

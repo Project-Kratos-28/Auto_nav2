@@ -1,0 +1,59 @@
+# kratos_glim image: the kratos nvblox image (Isaac ROS 4.6, ROS 2 Jazzy, nvblox + nvblox_nav2,
+# Nav2, ZED SDK 5.4.1 + zed-ros2-wrapper; see ~/kratos_nvblox/docker/Dockerfile.kratos)
+# plus the LiDAR side of the rover stack:
+#   - GLIM 1.2.2 CPU build (koide3 PPA, ubuntu2404) and the /glim_ros/map fix overlay
+#     (glim/glim_ros_fix: koide3/glim_ros2#76 backported to v1.2.2), built against it
+#   - Livox-SDK2 (for livox_ros_driver2, built from this repo)
+#   - Cloudini (point cloud compression, cloudini_topic_converter for kratos.launch.py cloudini:=true)
+# GLIM runs on the CPU on purpose: the Orin's GPU is taken by depth (ESS / ZED NEURAL) + nvblox.
+#
+# Build from the repo root (docker/build_image.sh does this):
+#   docker build -f docker/Dockerfile.glim -t kratos/glim_nvblox:latest .
+ARG BASE_IMAGE=kratos/isaac_ros_nvblox:latest
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-c"]
+ARG ROS_DISTRO=jazzy
+
+# GLIM (CPU) from the koide3 PPA, Nav2 in full (smac planner, MPPI), PCL for pcd2pgm, Cloudini.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    curl -s --compressed https://koide3.github.io/ppa/ubuntu2404/KEY.gpg \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/koide3_ppa.gpg \
+    && echo "deb [signed-by=/etc/apt/trusted.gpg.d/koide3_ppa.gpg] https://koide3.github.io/ppa/ubuntu2404 ./" \
+        > /etc/apt/sources.list.d/koide3_ppa.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        libiridescence-dev libboost-all-dev libglfw3-dev libmetis-dev \
+        libgtsam-points-dev ros-${ROS_DISTRO}-glim ros-${ROS_DISTRO}-glim-ros \
+        ros-${ROS_DISTRO}-navigation2 ros-${ROS_DISTRO}-nav2-bringup \
+        ros-${ROS_DISTRO}-pcl-ros ros-${ROS_DISTRO}-pcl-conversions libpcl-dev libeigen3-dev \
+        ros-${ROS_DISTRO}-tf2-ros ros-${ROS_DISTRO}-tf2-eigen \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        ros-${ROS_DISTRO}-cloudini-ros \
+    && ldconfig
+
+# Livox-SDK2. GCC 13 no longer pulls <cstdint> in transitively; the SDK relies on it.
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+    && cmake -S /tmp/Livox-SDK2 -B /tmp/Livox-SDK2/build -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_FLAGS="-include cstdint" \
+    && cmake --build /tmp/Livox-SDK2/build --parallel \
+    && cmake --install /tmp/Livox-SDK2/build \
+    && rm -rf /tmp/Livox-SDK2 && ldconfig
+
+# glim_ros 1.2.2 with the rviz_viewer submap fix (otherwise /glim_ros/map gets phantom walls).
+# Sourced last by the container's bashrc, like glim/glim_ros_fix/README.md prescribes.
+COPY glim/glim_ros_fix/rviz_viewer_submap_guard.patch /tmp/
+RUN mkdir -p /opt/glim_ros_fix_ws/src && cd /opt/glim_ros_fix_ws/src \
+    && git clone --depth 1 --branch v1.2.2 https://github.com/koide3/glim_ros2.git \
+    && cd glim_ros2 && git apply /tmp/rviz_viewer_submap_guard.patch \
+    && cd /opt/glim_ros_fix_ws && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && colcon build --packages-select glim_ros --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log /tmp/rviz_viewer_submap_guard.patch
+
+# Environment for every shell: ROS, ZED wrapper (from the base image), this workspace if built,
+# then the GLIM fix overlay LAST.
+RUN printf '%s\n' \
+    'source /opt/ros/jazzy/setup.bash' \
+    '[ -f /opt/zed_ws/install/setup.bash ] && source /opt/zed_ws/install/setup.bash' \
+    '[ -f /workspaces/kratos_glim/install/setup.bash ] && source /workspaces/kratos_glim/install/setup.bash' \
+    'source /opt/glim_ros_fix_ws/install/local_setup.bash   # must stay last (ros2 pkg prefix glim_ros)' \
+    > /etc/profile.d/kratos_glim.sh \
+    && echo 'source /etc/profile.d/kratos_glim.sh' >> /etc/bash.bashrc

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>glim_dump_export</name>
+  <version>0.0.1</version>
+  <description>Headless CLI: export a GLIM offline dump straight to PCD, no GUI, no PLY intermediate. Written because the installed GLIM 1.2.2 offline_viewer lacks the --export_path flag present in newer/master GLIM.</description>
+  <maintainer email="advaithm.nair@gmail.com">advaith</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>glim</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

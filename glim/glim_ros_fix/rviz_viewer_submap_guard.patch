@@ -1,0 +1,18 @@
+diff --git a/src/glim_ros/rviz_viewer.cpp b/src/glim_ros/rviz_viewer.cpp
+index a4b9988..c445f6d 100644
+--- a/src/glim_ros/rviz_viewer.cpp
++++ b/src/glim_ros/rviz_viewer.cpp
+@@ -487,7 +487,12 @@ void RvizViewer::globalmap_on_update_submaps(const std::vector<SubMap::Ptr>& sub
+ 
+   // Invoke a submap concatenation task in the RvizViewer thread
+   invoke([this, latest_submap, submap_poses] {
+-    this->submaps.push_back(latest_submap->frame);
++    // KRATOS patch (backport of koide3/glim_ros2#76): on_update_submaps also fires from the idle
++    // optimize() timer without adding a submap. Appending unconditionally grows this->submaps past
++    // submap_poses and corrupts /glim_ros/map (out-of-bounds pose lookup). Append only on a new submap.
++    if (this->submaps.size() < submap_poses.size()) {
++      this->submaps.push_back(latest_submap->frame);
++    }
+ 
+     if (!map_pub->get_subscription_count()) {
+       return;

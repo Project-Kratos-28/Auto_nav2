@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>kratos_perception</name>
+  <version>0.1.0</version>
+  <description>ZED 2i depth (ESS or ZED NEURAL) fused by nvblox in GLIM's odom frame; its 2D ESDF slice feeds the Nav2 local costmap (nvblox_layer in kratos_nav).</description>
+  <maintainer email="advaithm.nair@gmail.com">Advaith</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>zed_wrapper</exec_depend>
+  <exec_depend>nvblox_ros</exec_depend>
+  <exec_depend>nvblox_examples_bringup</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
