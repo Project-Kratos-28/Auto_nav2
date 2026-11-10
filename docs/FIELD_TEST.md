@@ -5,8 +5,7 @@ Test-day procedure on the rover's Orin. Setup: [`README.md`](../README.md); sett
 ## 0. Before going out
 
 - [ ] **Measure `lidar_z`**: MID-360 centre height above the ground. If it isn't 0.60, set
-      min = 0.2 − lidar_z and max = 1.8 − lidar_z in `src/kratos_nav/config/nav2_params.yaml`
-      (`min_obstacle_height` / `max_obstacle_height`, both costmaps) and
+      min = 0.2 − lidar_z and max = 1.8 − lidar_z in
       `src/pcd2pgm/config/pcd2pgm_live.yaml` (`thre_z_min` / `thre_z_max`), and pass
       `lidar_z:=<value>` to `start.sh`. Example: 0.55 → −0.35 / 1.25.
 - [ ] **Measure the ZED mount** (`cam_x`, `cam_y`, `cam_z` from `base_link` on the ground under the

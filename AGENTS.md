@@ -40,13 +40,10 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
 
 ## Invariants (breaking these fails silently in the field)
 
-- **`lidar_z` in four places must match:** `start.sh lidar_z:=` (→ `nav.launch.py` static TF and
-  `perception.launch.py`, which computes nvblox's slice band), `nav2_params.yaml`
-  (`min/max_obstacle_height`, both costmaps, on the obstacle layer and on its `lidar` source: the
-  layer's own minimum defaults to 0.0 and would drop everything below the LiDAR; the voxel
-  layer's `origin_z` = the minimum),
-  `pcd2pgm_live.yaml` (`thre_z_min/max`). Heights are relative to GLIM's `map` z=0, the LiDAR's
-  start height; the ground is at −`lidar_z`.
+- **`lidar_z` in two places must match:** `start.sh lidar_z:=` (→ `nav.launch.py` static TF and
+  `perception.launch.py`, which computes nvblox's slice band) and `pcd2pgm_live.yaml`
+  (`thre_z_min/max`). Heights are relative to GLIM's `map` z=0, the LiDAR's start height; the
+  ground is at −`lidar_z`. The costmaps' `traversability_layer` uses no height band.
 - **TF chain `map → odom → base_link → {livox_frame, zed_camera_link}`.** GLIM publishes the first
   two links; both mount links are static, from `nav.launch.py`. The ZED must never track or publish
   TF (`kratos_perception/config/zed2i_glim.yaml`). Without `base_link → livox_frame`, GLIM
@@ -70,8 +67,12 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
   `vx_min: 0.0`). Controller: RotationShim around MPPI; MPPI's `model_dt` must equal
   1 / `controller_frequency`. `lattice_filepath` is filled in by `nav.launch.py`, and
   `config/lattice/output.json` must match the costmap resolution (0.05).
-- **The LiDAR costmap layer is a `VoxelLayer`** (3D clearing). With `ObstacleLayer` beams that pass
-  over a low obstacle erase it from the costmap as the rover gets close.
+- **Terrain = `kratos_traversability`:** `traversability_mapper.py` (started by `nav.launch.py`, not
+  a lifecycle node) turns LiDAR + ZED points into `/traversability/grid`; `traversability_layer`
+  (before `inflation_layer`, both costmaps) reads it. Lethal = steeper than `max_slope_deg` with a
+  drop > `max_step`; holes not yet seen into cost `hidden_cost`, not lethal. Height-band layers
+  (`ObstacleLayer`/`VoxelLayer`) are gone from the costmaps: they made every hill a wall and
+  every drop invisible.
 - **LiDAR-only (`depth:=none`):** `kratos.launch.py` passes `use_nvblox:=false` to Nav2,
   which removes the nvblox local costmap plugin from a temporary params copy. The source
   YAML stays intact for camera runs.
@@ -83,7 +84,8 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
 ## Review hints
 
 - **Placeholders, not bugs:** `lidar_z` 0.60, camera mount (`cam_*`), 50×50 m grid, 1.0 m lattice
-  arc radius, MPPI speeds and critic weights.
+  arc radius, MPPI speeds and critic weights, traversability `max_slope_deg` 20 /
+  `max_step` 0.15.
 - **Not tested on the moving rover.** Tested on the Orin: full bring-up with both sensors (bench),
   the hardware-free tests.
 - **Never commit:** `build/`, `install/`, `log/`, `maps/`, `.home/`, `*.pcd`, `*.pgm`, GLIM dumps.

@@ -19,6 +19,7 @@
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_smac_planner</exec_depend>
   <exec_depend>nav2_mppi_controller</exec_depend>
+  <exec_depend>kratos_traversability</exec_depend>
   <exec_depend>nvblox_nav2</exec_depend>
   <exec_depend>nav2_common</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>

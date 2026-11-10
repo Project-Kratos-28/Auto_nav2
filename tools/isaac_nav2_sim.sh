@@ -6,7 +6,7 @@
 #                                                       bringup and Nav2, then check them
 #   tools/isaac_nav2_sim.sh goal 5.0,1.8 -2.0,1.5       send waypoints (map frame; see send_waypoints)
 #   tools/isaac_nav2_sim.sh goal --relative 2,0         2 m ahead of the rover
-#   tools/isaac_nav2_sim.sh goal gates                  the IRC arena's four gates, in order
+#   tools/isaac_nav2_sim.sh goal gates                  four gates, north ramp, two trench goals
 #   tools/isaac_nav2_sim.sh rviz                        open RViz on a running stack (map, costmaps, plan)
 #   tools/isaac_nav2_sim.sh status                      check /clock, Nav2 and the controller
 #   tools/isaac_nav2_sim.sh logs                        follow Nav2's log
@@ -15,13 +15,13 @@
 #   --glim      GLIM SLAM localization instead of Isaac's ground-truth odometry (not tested with MPPI)
 #   --no-rviz   no RViz (default: RViz when there is a display)
 #   --no-zed    LiDAR only. Default: also a depth camera at the ZED 2i's mount (110 deg, Isaac
-#               renders it: the ZED SDK does not run on this machine). Its depth goes to nvblox
-#               (kratos/nvblox_sim container, built on first use) and from there into the local
-#               costmap's nvblox_layer, as on the rover. That layer needs the nvblox_nav2 plugin on
-#               the host ($NVBLOX_WS, see Auto_Isaac_Sim/docker/Dockerfile.nvblox); without it the
-#               camera's points go straight into both costmaps instead.
+#               renders it: the ZED SDK does not run on this machine). Its points go to the
+#               traversability mapper (terrain, both costmaps) with the LiDAR's; its depth image to
+#               nvblox (kratos/nvblox_sim container, built on first use) and the local costmap's
+#               nvblox_layer, as on the rover. That layer needs the nvblox_nav2 plugin on the host
+#               ($NVBLOX_WS, see Auto_Isaac_Sim/docker/Dockerfile.nvblox), else it is left out.
 #   --flat      the old flat scene with boxes (default: the IRC arena, generated on first use by
-#               Auto_Isaac_Sim/scripts/make_irc_arena.py: hills, ramps, craters, a ditch, rocks, gates)
+#               Auto_Isaac_Sim/scripts/make_irc_arena.py: hills, ramps, craters, a trench, rocks, gates)
 #
 # Needs the Isaac Sim build, ~/Kratos/Auto_Isaac_Sim (scene, athena_nav_sim), ~/athena_ws and
 # ~/kratos_gui_ws built (see Auto_Isaac_Sim/docs/SETUP_FROM_SCRATCH.md). kratos_nav is built from
@@ -52,10 +52,10 @@ fail() { printf '\033[1;31m[sim] %s\033[0m\n' "$*"; exit 1; }
 LOCALIZATION=ground_truth
 RVIZ=$([[ "${DISPLAY:-}" == :* ]] && echo true || echo false)
 export ATHENA_SCENE="$ARENA/athena_irc.usda"
-# Costmap obstacle band, z in the map frame. In the arena the LiDAR sees the ground (z = -0.40 on
-# the plains, +-0.04 m rough): only what stands more than ~0.12 m above it is an obstacle.
-# The flat scene's ground plane gives no LiDAR returns, so there every return is an obstacle.
-MIN_OBSTACLE_HEIGHT=-0.28
+# nvblox's obstacle band starts here, z in odom: the arena's plains are at -0.40, so this is
+# ground + 0.25 m (rocks, posts). Terrain (slopes, holes, crater rims) is the traversability
+# layer's job, so the band stays clear of it.
+NVBLOX_SLICE_MIN=-0.15
 ZED=true
 args=()
 for a in "$@"; do
@@ -63,7 +63,7 @@ for a in "$@"; do
         --glim)    LOCALIZATION=glim ;;
         --no-rviz) RVIZ=false ;;
         --no-zed)  ZED=false ;;
-        --flat)    ATHENA_SCENE="$FLAT_SCENE"; MIN_OBSTACLE_HEIGHT=-0.5 ;;
+        --flat)    ATHENA_SCENE="$FLAT_SCENE" ;;
         *)         args+=("$a") ;;
     esac
 done
@@ -110,16 +110,18 @@ wait_for() {  # seconds, description, test command...
 
 # Processes of this stack, also ones started by hand or by dgx.sh. The [x] brackets stop the
 # pattern from matching this script's own command line.
-STACK='[k]it/kit .*isaacsim\.exp\.full|[r]os2 launch (athena_controller|athena_nav_sim)|/opt/ros/jazzy/lib/[n]av2_[a-z_]+/|/athena_ws/install/[a]thena_(controller|nav_sim)/|/opt/ros/jazzy/lib/[g]lim_ros/'
+STACK='[k]it/kit .*isaacsim\.exp\.full|[r]os2 launch (athena_controller|athena_nav_sim)|/opt/ros/jazzy/lib/[n]av2_[a-z_]+/|/athena_ws/install/[a]thena_(controller|nav_sim)/|/opt/ros/jazzy/lib/[g]lim_ros/|/lib/kratos_traversability/[t]raversability_mapper'
 stack_running() { pgrep -f "$STACK" > /dev/null; }
 
 build_mppi() {
-    [[ -f "$MPPI_WS/install/kratos_nav/share/kratos_nav/config/nav2_params_sim.yaml" ]] && return 0
-    say "building kratos_nav from $REPO into $MPPI_WS (first time only)"
+    [[ -f "$MPPI_WS/install/kratos_nav/share/kratos_nav/config/nav2_params_sim.yaml" &&
+       -d "$MPPI_WS/install/kratos_traversability" ]] && return 0
+    say "building kratos_nav and kratos_traversability from $REPO into $MPPI_WS (first time only)"
     (set +u; source /opt/ros/jazzy/setup.bash; set -u
      colcon --log-base "$MPPI_WS/log" build --build-base "$MPPI_WS/build" --install-base "$MPPI_WS/install" \
-         --symlink-install --base-paths "$REPO/src/kratos_nav" --packages-select kratos_nav) \
-        || fail "kratos_nav build failed"
+         --symlink-install --base-paths "$REPO/src/kratos_nav" "$REPO/src/kratos_traversability" \
+         --packages-select kratos_nav kratos_traversability) \
+        || fail "kratos_nav / kratos_traversability build failed"
 }
 
 build_arena() {
@@ -141,7 +143,7 @@ start_nvblox() {
         -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET \
         -v "$CUDA_LIBS:/usr/local/cuda/lib64:ro" -v "$SIM_REPO/src:/sim_src:ro" "$NVBLOX_IMAGE" \
         bash -c "source /opt/ros/jazzy/setup.bash && exec ros2 launch /sim_src/athena_nav_sim/launch/nvblox_sim.launch.py \
-                 sim_config:=/sim_src/athena_zed_nav/config/nvblox_sim.yaml slice_min:=$MIN_OBSTACLE_HEIGHT" > /dev/null
+                 sim_config:=/sim_src/athena_zed_nav/config/nvblox_sim.yaml slice_min:=$NVBLOX_SLICE_MIN" > /dev/null
 }
 
 clock_ticking() { timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1; }
@@ -183,12 +185,14 @@ up() {
     local isaac_script=isaac_autoplay.py camera_cloud=none nvblox=false
     if [[ $ZED == true ]]; then
         isaac_script=isaac_zed_only.py
-        export ATHENA_KEEP_LIDAR=1 ATHENA_CAM_WIDTH=320 ATHENA_CAM_HEIGHT=180
+        # Depth points for the traversability mapper (terrain in both costmaps) and RViz; nvblox
+        # (local costmap) reads the depth image.
+        export ATHENA_KEEP_LIDAR=1 ATHENA_CAM_WIDTH=320 ATHENA_CAM_HEIGHT=180 ATHENA_CAM_CLOUD=1
+        camera_cloud=/sim_camera/depth/points
         if [[ -d "$NVBLOX_WS/install/nvblox_nav2" || -d /opt/ros/jazzy/share/nvblox_nav2 ]]; then
             nvblox=true
         else
-            warn "no nvblox_nav2 costmap plugin (build it into $NVBLOX_WS): camera points go straight into the costmaps"
-            camera_cloud=/sim_camera/depth/points; export ATHENA_CAM_CLOUD=1
+            warn "no nvblox_nav2 costmap plugin (build it into $NVBLOX_WS): no nvblox layer"
         fi
     fi
     (set +u; source "$SIM_REPO/scripts/ros_env.sh"; set -u
@@ -212,7 +216,7 @@ up() {
     say "starting Nav2, localization:=$LOCALIZATION (log: $LOGS/nav.log)"
     start_group nav ros2 launch athena_nav_sim nav_sim.launch.py \
         localization:="$LOCALIZATION" use_bridge:=false rviz:="$RVIZ" glim_viewer:=false \
-        min_obstacle_height:="$MIN_OBSTACLE_HEIGHT" camera_cloud:="$camera_cloud" nvblox:="$nvblox"
+        camera_cloud:="$camera_cloud" nvblox:="$nvblox"
     wait_for 180 "Nav2 to become active" grep -q "Managed nodes are active" "$LOGS/nav.log"
     [[ $LOCALIZATION == glim ]] && say "GLIM: keep the rover still until it logs 'initial IMU state estimation result' ($0 logs)"
 
@@ -220,7 +224,7 @@ up() {
     if check; then say "all up"; else warn "some checks failed, see $LOGS"; fi
     cat <<EOF
 
-  Send goals:   $0 goal gates              (IRC arena: all four gates)
+  Send goals:   $0 goal gates              (four gates, north ramp, two trench goals)
                 $0 goal 5.0,1.8            (map frame)
                 $0 goal -2.0,1.5 0,0
                 $0 goal --relative 2,0     (rover frame)

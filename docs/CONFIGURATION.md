@@ -3,16 +3,32 @@
 ## Heights: `lidar_z`
 
 GLIM's `map`/`odom` origin is the LiDAR's **start** pose, so the ground is at `z = −lidar_z`.
-Every obstacle height band is 0.2 m to 1.8 m above ground, i.e. `0.2 − lidar_z` to `1.8 − lidar_z`
-(−0.40 / 1.20 at `lidar_z` 0.60). The value appears in four places; change them together:
+The height bands (pcd2pgm's `/map`, nvblox's slice) are 0.2 m to 1.8 m above ground, i.e.
+`0.2 − lidar_z` to `1.8 − lidar_z` (−0.40 / 1.20 at `lidar_z` 0.60). Change these together:
 
 | Where | What |
 |---|---|
 | `start.sh lidar_z:=` (→ `nav.launch.py`, `perception.launch.py`) | static TF; nvblox slice band (computed) |
-| `src/kratos_nav/config/nav2_params.yaml` | `min_obstacle_height` / `max_obstacle_height`, both costmaps, twice each: on `obstacle_layer` (its own minimum defaults to 0.0, which drops everything below the LiDAR) and on its `lidar` source; plus the voxel grid's `origin_z` (= the minimum; 16 × 0.1 m voxels reach the maximum) |
 | `src/pcd2pgm/config/pcd2pgm_live.yaml` | `thre_z_min` / `thre_z_max` |
 
-Symptom of a wrong value: the floor shows as obstacles, or low obstacles are missing.
+Symptom of a wrong value: the floor shows as obstacles in `/map`, or low obstacles are missing.
+The costmaps' terrain layer needs no height: see below.
+
+## Terrain: `traversability_mapper`
+
+`nav2_params.yaml` → `traversability_mapper`. A 10 cm height map in `odom` from the LiDAR
+(`/livox/lidar_filtered`, 1–10 m) and the ZED cloud, rated per cell and read by
+`traversability_layer` in both costmaps:
+
+| Rating | Rule | Grid value |
+|---|---|---|
+| lethal | drop > `max_step` (0.15 m) and steeper than `max_slope_deg` (20°) between two cells ≤ `short_radius` (0.5 m) apart, or up to `pair_radius` (2.5 m) across a gap the sensors can't see into (edge of a drop) | 100 |
+| hidden | beams passed > `max_drop` (0.3 m) below the ground nearby, floor not seen yet | `hidden_cost` 60 |
+| slope | 8° → 20° | 0 → 40 |
+| unknown | never seen | −1 (costmap unchanged) |
+
+`max_slope_deg` and `max_step` are placeholders: set them to what the rover can climb. The ZED
+cloud comes at `point_cloud_freq` (1 Hz in `zed2i_glim.yaml`): the near field updates slowly.
 
 ## Camera mount
 
@@ -23,7 +39,7 @@ by 3.5 cm at 2 m; ground that rises into the band becomes an obstacle.
 
 | File | Setting |
 |---|---|
-| `nav2_params.yaml` | footprint 1.3 × 1.2 m (measured, + 0.05 m padding), LiDAR `obstacle_min_range` 0.8 m, Smac State Lattice (diff-drive primitives, 1.0 m arcs, forward only, pivots penalised), RotationShim (one 0.3 rad/s pivot per new goal if > 45° off) + MPPI (≤ 0.5 m/s, ≤ 0.5 rad/s, may turn in place), no reversing, velocity smoother deadband 0.05 m/s, local costmap 6×6 m (LiDAR + nvblox), local inflation scaling 5.0 (MPPI), global 1.0 (Smac), global costmap `/map` + LiDAR |
+| `nav2_params.yaml` | footprint 1.3 × 1.2 m (measured, + 0.05 m padding), Smac State Lattice (diff-drive primitives, 1.0 m arcs, forward only, pivots penalised), RotationShim (one 0.3 rad/s pivot per new goal if > 45° off) + MPPI (≤ 0.5 m/s, ≤ 0.5 rad/s, may turn in place), no reversing, velocity smoother deadband 0.05 m/s, local costmap 6×6 m (terrain + nvblox), local inflation scaling 5.0 (MPPI), global 1.0 (Smac), global costmap `/map` + terrain |
 | `behavior_trees/*_no_spin.xml` | Jazzy default trees without Spin or BackUp (never reverse; pivots are slow) |
 | `config/lattice/output.json` | Smac Lattice motion primitives; regenerate if the costmap resolution or arc radius changes (`config/lattice/README.md`) |
 | `pcd2pgm_live.yaml` | fixed grid origin (−25, −25), 50×50 m, 0.05 m: size it to the whole arena; points outside are dropped. Radius filter 0.75 m / 2 neighbours (GLIM's map is voxelized at 0.5 m; tighter values erase walls) |

@@ -49,7 +49,8 @@ timeout is cancelled too.
 
 | Value | Where | Placeholder |
 |---|---|---|
-| LiDAR height `lidar_z` | `nav.launch.py`, `nav2_params.yaml` (`min/max_obstacle_height`), `src/pcd2pgm/config/pcd2pgm_live.yaml` (`thre_z_min/max`) | 0.60 m. **Change all three together** |
+| LiDAR height `lidar_z` | `nav.launch.py`, `src/pcd2pgm/config/pcd2pgm_live.yaml` (`thre_z_min/max`) | 0.60 m. **Change both together** |
+| Terrain limits | `nav2_params.yaml` → `traversability_mapper` (`max_slope_deg`, `max_step`) | 20°, 0.15 m |
 | Footprint | `nav2_params.yaml` (global and local costmap) | measured: 1.3 x 1.2 m (length x width) + 0.05 m padding |
 
 ## Tests

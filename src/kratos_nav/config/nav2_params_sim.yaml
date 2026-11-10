@@ -5,6 +5,7 @@
 #   nav.launch.py   TF base_link -> livox_frame   (static, LiDAR mount)
 #   pcd2pgm live    /map  OccupancyGrid           (replaces map_server)
 #   driver          /livox/lidar  PointCloud2     (live obstacles)
+#   traversability_mapper /traversability/grid (terrain: slopes, rocks, drops; nav.launch.py)
 #   nvblox          /nvblox_node/static_map_slice (ZED 2i depth, near-field obstacles,
 #                   local AND global costmap; kratos_perception/launch/perception.launch.py)
 #
@@ -12,9 +13,10 @@
 # ground. We put base_link ON THE GROUND directly under the LiDAR, so
 # lidar_z (nav.launch.py) = measured LiDAR height above ground, and the
 # ground sits at z = -lidar_z in map/odom. Placeholder lidar_z = 0.60, so
-# "0.2 m to 1.8 m above ground" becomes min -0.40 / max 1.20 below.
-# Measure the real rover: min = 0.2 - lidar_z, max = 1.8 - lidar_z.
-# pcd2pgm_live.yaml thre_z_min/thre_z_max MUST use the same two numbers.
+# "0.2 m to 1.8 m above ground" becomes -0.40 / 1.20 in pcd2pgm_live.yaml
+# (thre_z_min/thre_z_max) and in nvblox's slice band (perception.launch.py).
+# The costmaps' traversability_layer needs no height numbers: it compares each
+# cell with the ground around it.
 
 bt_navigator:
   ros__parameters:
@@ -186,10 +188,10 @@ local_costmap:
       # Wheelbase 37 in, track ~35.5 in. Padding 5 cm on every side.
       footprint: "[[0.65, 0.60], [0.65, -0.60], [-0.65, -0.60], [-0.65, 0.60]]"
       footprint_padding: 0.05
-      # nvblox_layer: ZED 2i depth fused by nvblox (2D ESDF slice of GLIM's odom frame).
-      # Sees what the MID-360 cannot: low obstacles within ~5 m (its beams only reach the
-      # ground ~4.9 m out at lidar_z 0.60) and anything closer than obstacle_min_range.
-      plugins: ["obstacle_layer", "nvblox_layer", "inflation_layer"]
+      # nvblox_layer: ZED 2i depth fused by nvblox (2D ESDF slice of GLIM's odom frame), a
+      # fixed height band: catches tall obstacles near the rover. On hills it marks the slope
+      # itself; terrain is the traversability_layer's job.
+      plugins: ["traversability_layer", "nvblox_layer", "inflation_layer"]
 
       nvblox_layer:
         plugin: "nvblox::nav2::NvbloxCostmapLayer"
@@ -198,43 +200,18 @@ local_costmap:
         nvblox_map_slice_topic: "/nvblox_node/static_map_slice"
         convert_to_binary_costmap: true      # slice distance <= 0 (inside an obstacle) -> lethal
 
-      obstacle_layer:
-        # VoxelLayer, not ObstacleLayer: ObstacleLayer clears in 2D, so every beam that passes
-        # OVER a low rock and lands farther away erases the rock, and it vanishes from the
-        # costmap once it is too close for a beam to hit it (Isaac Sim test: rover drove onto
-        # 0.3 m rocks). VoxelLayer clears in 3D: only a beam through the rock's own voxel clears it.
-        # Grid: 16 voxels of z_resolution upward from origin_z. origin_z = min_obstacle_height.
-        plugin: "nav2_costmap_2d::VoxelLayer"
+      traversability_layer:
+        # Terrain from kratos_traversability's traversability_mapper (same params file, below):
+        # steep slopes, rocks and drops are lethal, gentle slopes cheap, holes it cannot see into
+        # yet expensive. Heights are relative to the ground around each cell, so hills, ramps and
+        # shallow craters stay drivable (the height-band obstacle layer it replaced marked
+        # everything above a fixed z, i.e. every hill and crater rim). Before inflation_layer, so
+        # its lethal cells are inflated.
+        plugin: "kratos_traversability::TraversabilityLayer"
         enabled: true
-        origin_z: 0.11
-        z_resolution: 0.1
-        z_voxels: 16
-        mark_threshold: 0
-        publish_voxel_map: false
-        # The layer has its own height band, on top of the sensor's below. Its default minimum
-        # is 0.0 (= LiDAR height in map/odom): without these two lines everything lower than
-        # the LiDAR is dropped and never marked. Keep them equal to the sensor's values.
-        min_obstacle_height: 0.11
-        max_obstacle_height: 1.71
-        observation_sources: lidar
-        lidar:
-          # Raw driver cloud, not /livox/lidar_filtered: the angle filter cuts a
-          # 30 deg cone straight AHEAD, which would make the rover blind to what
-          # it drives into. Self-hits on the rover body are dropped by
-          # obstacle_min_range instead (0.8 m; nvblox covers the near field).
-          # The body's corners reach ~0.89 m from the LiDAR: if a permanent blob
-          # sticks to the rover in RViz, raise obstacle_min_range.
-          topic: /livox/points
-          data_type: "PointCloud2"
-          marking: true
-          clearing: true
-          min_obstacle_height: 0.11   # simulated LiDAR is 0.09 m above ground
-          max_obstacle_height: 1.71
-          obstacle_min_range: 0.5
-          obstacle_max_range: 5.0
-          raytrace_min_range: 0.0
-          raytrace_max_range: 6.0
-          expected_update_rate: 0.0
+        grid_topic: /traversability/grid
+        transform_tolerance: 0.5
+        update_radius: 12.0         # m: redrawn around the rover per new grid (= mapper window / 2)
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -248,8 +225,8 @@ local_costmap:
 
 # ---------------------------------------------------------------------------
 # Global costmap: whole arena. static_layer = GLIM's map (pcd2pgm's live /map).
-# obstacle_layer (LiDAR) and nvblox_layer (ZED depth) on top so things the 10 s
-# map hasn't caught yet, or the MID-360 can't see, still show to the planner.
+# traversability_layer (LiDAR + ZED terrain) on top so things the 10 s map hasn't
+# caught yet, and drops the map can't show, still reach the planner.
 # ---------------------------------------------------------------------------
 global_costmap:
   global_costmap:
@@ -265,7 +242,7 @@ global_costmap:
       transform_tolerance: 0.3
       footprint: "[[0.65, 0.60], [0.65, -0.60], [-0.65, -0.60], [-0.65, 0.60]]"
       footprint_padding: 0.05
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "traversability_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -275,37 +252,18 @@ global_costmap:
         map_subscribe_transient_local: true
         subscribe_to_updates: false
 
-      obstacle_layer:
-        # VoxelLayer, not ObstacleLayer: ObstacleLayer clears in 2D, so every beam that passes
-        # OVER a low rock and lands farther away erases the rock, and it vanishes from the
-        # costmap once it is too close for a beam to hit it (Isaac Sim test: rover drove onto
-        # 0.3 m rocks). VoxelLayer clears in 3D: only a beam through the rock's own voxel clears it.
-        # Grid: 16 voxels of z_resolution upward from origin_z. origin_z = min_obstacle_height.
-        plugin: "nav2_costmap_2d::VoxelLayer"
+      traversability_layer:
+        # Terrain from kratos_traversability's traversability_mapper (same params file, below):
+        # steep slopes, rocks and drops are lethal, gentle slopes cheap, holes it cannot see into
+        # yet expensive. Heights are relative to the ground around each cell, so hills, ramps and
+        # shallow craters stay drivable (the height-band obstacle layer it replaced marked
+        # everything above a fixed z, i.e. every hill and crater rim). Before inflation_layer, so
+        # its lethal cells are inflated.
+        plugin: "kratos_traversability::TraversabilityLayer"
         enabled: true
-        origin_z: 0.11
-        z_resolution: 0.1
-        z_voxels: 16
-        mark_threshold: 0
-        publish_voxel_map: false
-        # The layer has its own height band, on top of the sensor's below. Its default minimum
-        # is 0.0 (= LiDAR height in map/odom): without these two lines everything lower than
-        # the LiDAR is dropped and never marked. Keep them equal to the sensor's values.
-        min_obstacle_height: 0.11
-        max_obstacle_height: 1.71
-        observation_sources: lidar
-        lidar:
-          topic: /livox/points
-          data_type: "PointCloud2"
-          marking: true
-          clearing: true
-          min_obstacle_height: 0.11
-          max_obstacle_height: 1.71
-          obstacle_min_range: 0.5
-          obstacle_max_range: 5.0
-          raytrace_min_range: 0.0
-          raytrace_max_range: 6.0
-          expected_update_rate: 0.0
+        grid_topic: /traversability/grid
+        transform_tolerance: 0.5
+        update_radius: 12.0         # m: redrawn around the rover per new grid (= mapper window / 2)
 
       # Same nvblox slice as the local costmap. The slice is in odom; the layer looks up
       # map -> odom from GLIM's TF and merges with max, so it never erases the GLIM map.
@@ -427,3 +385,41 @@ velocity_smoother:
     # Commands below 0.05 m/s become 0 (MPPI slows smoothly near obstacles and goals).
     deadband_velocity: [0.05, 0.0, 0.0]
     velocity_timeout: 1.0
+
+# ---------------------------------------------------------------------------
+# traversability_mapper (kratos_traversability): LiDAR + camera points -> 2.5D height map in
+# odom -> /traversability/grid -> traversability_layer in both costmaps. See the script's docstring.
+# ---------------------------------------------------------------------------
+traversability_mapper:
+  ros__parameters:
+    use_sim_time: false
+    frame: odom
+    robot_frame: base_link
+    resolution: 0.1
+    size: 60.0                 # m, square around the rover; recentred after recenter_distance
+    recenter_distance: 10.0
+    window: 24.0               # m, square around the rover that is re-rated each cycle
+    rate: 4.0
+    max_slope_deg: 20.0        # PLACEHOLDER: steepest slope the rover can climb or descend
+    max_step: 0.15             # PLACEHOLDER: highest step it can drive over (m)
+    pair_radius: 2.5            # edge of a drop: floor seen up to this far past it (2.5 m: a 0.8 m
+                               # deep trench edge is confirmed ~1.3 m away with the sensors 0.5 m up)
+    short_radius: 0.5          # slope/step check between any two seen cells
+    max_drop: 0.3              # hidden hole deeper than this -> hidden_cost until seen
+    drop_radius: 2.5
+    hidden_cost: 60
+    slope_cost_start_deg: 8.0
+    slope_cost_max: 40.0
+    body_half_length: 0.75     # rover's own points are dropped inside this box
+    body_half_width: 0.70
+    max_weight: 5.0            # height = range-weighted mean; cap keeps it following new data
+    sources: ["lidar", "camera"]
+    sources.lidar.topic: /livox/points_filtered       # athena_nav_sim points_crop: body removed
+    sources.lidar.min_range: 0.5
+    sources.lidar.max_range: 10.0      # farther, chassis pitch makes heights too noisy
+    sources.lidar.ray_stride: 4
+    sources.camera.topic: /sim_camera/depth/points    # scripts/isaac_zed_only.py, ATHENA_CAM_CLOUD=1
+    sources.camera.min_range: 0.3
+    sources.camera.max_range: 6.0
+    sources.camera.ray_stride: 16
+    sources.camera.ray_range: 6.0

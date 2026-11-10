@@ -5,7 +5,7 @@ How the stack fits together. Setup and running: [`README.md`](../README.md).
 ```
 Livox MID-360 ─► livox_ros_driver2 ─► /livox/lidar ─┬─► lidar_angle_filter ─► /livox/lidar_filtered ─► GLIM
                                    └► /livox/imu ───┼──────────────────────────────────────────────────► GLIM
-                                                    └─► Nav2 obstacle_layer (local + global costmap)
+                                                    └─► traversability_mapper ─► /traversability/grid ─► Nav2 (local + global)
 GLIM (+ waypoint_manager) ─► TF map→odom→base_link, /glim_ros/odom, /glim_ros/map, waypoint services
 /glim_ros/map ─► pcd2pgm (live) ─► /map ─► Nav2 global costmap
 ZED 2i ─► ZED NEURAL depth (or ESS) ─► nvblox (odom frame) ─► /nvblox_node/static_map_slice ─► Nav2 local costmap
@@ -52,10 +52,12 @@ slice ~9–12 Hz; CPU 30–60 % per core, GPU ~37 %, RAM 11 GB of 62 GB.
 
 ## Known limits
 
-- **Ramps:** nvblox (and the LiDAR layers) mark every surface 0.2–1.8 m above the *start* ground as
-  an obstacle. A 10° ramp becomes a wall ~1.1 m up it (5°: 2.3 m); on a hill, ground can enter the band.
-- **Ditches and drops are not detected** by any layer, and the planner allows unknown space
-  (`allow_unknown: true`).
+- **Ramps:** nvblox and pcd2pgm's `/map` still mark every surface 0.2–1.8 m above the *start*
+  ground as an obstacle. A 10° ramp becomes a wall ~1.1 m up it (5°: 2.3 m). The terrain layer
+  rates slopes relative to the ground around them (tested in Isaac Sim only).
+- **Drops** are seen by the terrain layer only once the rover is close (~1.3 m for a 0.8 m deep
+  trench in the sim); until then a hidden hole costs 60, not lethal, and the planner allows unknown
+  space (`allow_unknown: true`).
 - **No relocalization:** waypoints and the map live only in the running GLIM session.
 - **GLIM aborts on full LiDAR occlusion** (e.g. a hand over the sensor).
 - **Fixed 50×50 m grid** around GLIM's start: size it to the arena.

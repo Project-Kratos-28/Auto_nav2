@@ -5,6 +5,8 @@ Starts the things Nav2 needs that nobody else publishes:
   2. static TF  base_link -> zed_camera_link  (where the ZED 2i sits; for nvblox)
   3. Nav2: controller, smoother, planner, behaviors, bt_navigator, waypoint_follower,
      velocity_smoother, and their lifecycle manager.
+  4. traversability_mapper (kratos_traversability): LiDAR + ZED points -> /traversability/grid,
+     the terrain both costmaps' traversability_layer reads. Not a lifecycle node.
 
 Deliberately NOT started: map_server (pcd2pgm publishes /map live) and AMCL
 (GLIM publishes map->odom). Driver, angle filter, GLIM, pcd2pgm and the camera
@@ -111,6 +113,10 @@ def generate_launch_description():
              parameters=[params], remappings=remaps)
         for pkg_name, exe, name, remaps in NAV2_NODES
     ]
+    traversability = Node(
+        package='kratos_traversability', executable='traversability_mapper.py',
+        name='traversability_mapper', output='screen', parameters=[params])
+
     lifecycle = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_navigation',
         output='screen',
@@ -134,5 +140,6 @@ def generate_launch_description():
         lidar_tf,
         camera_tf,
         *nav2,
+        traversability,
         lifecycle,
     ])
