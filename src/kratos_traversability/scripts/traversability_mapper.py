@@ -6,9 +6,14 @@ rover, and rates every cell:
 
   lethal (100)  a higher cell next to a lower one, with the drop both > max_step and steeper
                 than max_slope_deg. Within short_radius every pair counts (rocks, steep slopes,
-                crater walls); farther, up to pair_radius, only when the next cell towards the
-                lower one is unseen: the edge of a drop whose wall is hidden but whose floor is
-                in view. Only the higher cell is marked, so a rock does not grow a ring of lethal
+                crater walls) if the ground already falls that steeply to the next cell: the
+                brink and the face, not the flat ground behind the brink (a 3 m wide bridge
+                keeps its deck). Farther, up to pair_radius, only when the next cell towards
+                the lower one is unseen and a beam passed just beyond it clearly below this
+                cell's height: the edge of a drop whose wall is hidden but whose floor is in
+                view. Ground hidden behind a crest (a ramp's top seen from below) has no such
+                beam and stays unknown. Such an edge is first marked within edge_range of the
+                rover (farther, range noise fakes it), then kept. Only the higher cell is marked, so a rock does not grow a ring of lethal
                 ground around it, and flat ground before an edge stays drivable.
   hidden (60)   a hole the sensors cannot see into yet: beams passed over the cell so the ground
                 there is at least max_drop lower than known ground within drop_radius, but the
@@ -24,6 +29,11 @@ steep. Nothing here depends on the sensor's height above ground (lidar_z).
 Sources are point clouds, each with its own topic and range limits (parameters
 sources.<name>.topic etc.); points on the rover's own body (footprint box) are dropped.
 Beams for the hidden-drop check are traced from the sensor origin for every ray_stride-th point.
+
+Scans taken while the body tilts faster than max_tilt_rate_deg (rocking over a rock, into a
+crater) are skipped: a LiDAR sweep or camera frame then spans several attitudes, and one pose
+per scan puts the ground tens of centimetres off at a few metres (Isaac Sim: false lethal
+patches around a crater after driving through it).
 
 A cell's height is a weighted mean of the highest point per scan, weighted 1 / (1 + (r/4 m)^2)
 by range: far returns are noisy (1 deg of chassis pitch is 20 cm at 12 m), so a close look
@@ -77,6 +87,7 @@ class TraversabilityMapper(Node):
         self.max_step = p('max_step', 0.15).value
         self.pair_radius = p('pair_radius', 1.5).value
         self.short_radius = p('short_radius', 0.5).value
+        self.edge_range = p('edge_range', 4.0).value
         self.max_drop = p('max_drop', 0.3).value
         self.drop_radius = p('drop_radius', 2.5).value
         self.hidden_cost = int(p('hidden_cost', 60).value)
@@ -86,6 +97,7 @@ class TraversabilityMapper(Node):
         half_l, half_w = p('body_half_length', 0.75).value, p('body_half_width', 0.70).value
         self.body = (half_l, half_w)
         self.max_weight = p('max_weight', 5.0).value
+        self.max_tilt_rate = math.radians(p('max_tilt_rate_deg', 10.0).value)
 
         self.sources = {}
         for name in p('sources', ['lidar']).value:
@@ -106,6 +118,8 @@ class TraversabilityMapper(Node):
         self.w = np.zeros((self.n, self.n), np.float32)             # weight behind h
         self.ub = np.full((self.n, self.n), np.inf, np.float32)     # lowest beam over the cell
         self.cost = np.full((self.n, self.n), -1, np.int8)
+        self.edge = np.zeros((self.n, self.n), bool)                # hidden-wall edges confirmed close by
+        self.skipped = 0
         self.origin = None                                          # (x, y) of cell (0, 0) corner
 
         self.tf = Buffer()
@@ -140,7 +154,7 @@ class TraversabilityMapper(Node):
         if math.hypot(rx - cx, ry - cy) < self.recenter:
             return
         sx, sy = int(round((rx - cx) / self.res)), int(round((ry - cy) / self.res))
-        for name, fill in (('h', np.nan), ('w', 0.0), ('ub', np.inf), ('cost', -1)):
+        for name, fill in (('h', np.nan), ('w', 0.0), ('ub', np.inf), ('cost', -1), ('edge', False)):
             old = getattr(self, name)
             new = np.full_like(old, fill)
             src_y, dst_y = slice(max(sy, 0), self.n + min(sy, 0)), slice(max(-sy, 0), self.n + min(-sy, 0))
@@ -156,6 +170,16 @@ class TraversabilityMapper(Node):
         return iy * self.n + ix, ok
 
     # --- input -------------------------------------------------------------------------------
+    def tilt_rate(self, stamp):
+        """How fast the body's up axis turned over the 0.2 s before stamp (rad/s); 0 if unknown."""
+        try:
+            a = self.tf.lookup_transform(self.frame, self.robot_frame, stamp)
+            b = self.tf.lookup_transform(self.frame, self.robot_frame, stamp - rclpy.duration.Duration(seconds=0.2))
+        except TransformException:
+            return 0.0
+        up_a, up_b = quat_to_matrix(a.transform.rotation)[:, 2], quat_to_matrix(b.transform.rotation)[:, 2]
+        return math.acos(max(-1.0, min(1.0, float(up_a @ up_b)))) / 0.2
+
     def integrate(self, src, robot):
         msg, src['msg'] = src['msg'], None
         try:
@@ -168,6 +192,9 @@ class TraversabilityMapper(Node):
             except TransformException as e:
                 self.get_logger().warn(f'no TF {msg.header.frame_id} -> {self.frame}: {e}', throttle_duration_sec=5.0)
                 return
+        if self.tilt_rate(Time.from_msg(msg.header.stamp)) > self.max_tilt_rate:
+            self.skipped += 1
+            return
         pts = point_cloud2.read_points_numpy(msg, field_names=('x', 'y', 'z'), skip_nans=True)
         pts = pts[np.isfinite(pts).all(axis=1)]
         rng = np.linalg.norm(pts, axis=1)
@@ -238,14 +265,40 @@ class TraversabilityMapper(Node):
             # Lethal over the core plus Pd (the hidden-drop check needs it there too).
             my, mx = ny + 2 * Pd, nx + 2 * Pd
             Hm = H[Pp:Pp + my, Pp:Pp + mx]
-            lethal_m = np.zeros((my, mx), bool)
+            short_m = np.zeros((my, mx), bool)
+            far_m = np.zeros((my, mx), bool)
             tan = math.tan(self.max_slope)
             for di, dj, d, (si, sj) in self.offsets:
                 drop = Hm - H[Pp + dj:Pp + dj + my, Pp + di:Pp + di + mx]
                 cond = (drop > self.max_step) & (drop > d * tan)
+                nxt = H[Pp + sj:Pp + sj + my, Pp + si:Pp + si + mx]
                 if d > self.short_radius:
-                    cond &= np.isnan(H[Pp + sj:Pp + sj + my, Pp + si:Pp + si + mx])
-                lethal_m |= cond
+                    # A hidden wall: the next cell is unseen and, within 3 cells past this one, a
+                    # beam went by clearly below this cell's height (on its way down to the
+                    # floor). Beams over ground hidden behind a crest (a ramp's deck seen from
+                    # below) stay above it: no evidence of a drop.
+                    beam = UB[Pp + sj:Pp + sj + my, Pp + si:Pp + si + mx]
+                    for k in (2, 3):
+                        beam = np.minimum(beam, UB[Pp + k * sj:Pp + k * sj + my, Pp + k * si:Pp + k * si + mx])
+                    far_m |= cond & np.isnan(nxt) & (beam < Hm - 0.05)
+                else:
+                    # The steep part must start at this cell. A flat deck 0.4 m in from its edge
+                    # is not lethal, only the brink and the face are.
+                    short_m |= cond & (np.isnan(nxt) | (Hm - nxt > math.hypot(si, sj) * self.res * tan))
+
+            # A hidden wall is only confirmed from close by (its floor comes into view within
+            # ~2 m of the edge); from far off, range noise fakes it. Once confirmed it stays
+            # while the heights still say so.
+            gj0, gi0 = j0 - Pd, i0 - Pd
+            cj0, cj1, ci0, ci1 = max(gj0, 0), min(gj0 + my, self.n), max(gi0, 0), min(gi0 + mx, self.n)
+            block = (slice(cj0 - gj0, cj1 - gj0), slice(ci0 - gi0, ci1 - gi0))
+            ys = self.origin[1] + (np.arange(cj0, cj1) + 0.5) * self.res - ry
+            xs = self.origin[0] + (np.arange(ci0, ci1) + 0.5) * self.res - rx
+            confirmed = far_m[block] & (self.edge[cj0:cj1, ci0:ci1] | (np.hypot(xs[None, :], ys[:, None]) < self.edge_range))
+            self.edge[cj0:cj1, ci0:ci1] = confirmed
+            far_m[:] = False
+            far_m[block] = confirmed
+            lethal_m = short_m | far_m
 
             # Hidden drops: beams passed so low over an unseen cell that its ground is more than
             # max_drop below the ground (known, not an obstacle) within drop_radius.
@@ -288,6 +341,8 @@ class TraversabilityMapper(Node):
                 fresh = True
         if not fresh:
             return
+        if self.skipped:
+            self.get_logger().info(f'{self.skipped} scans skipped so far (body tilting fast)', throttle_duration_sec=20.0)
         self.rate(rx, ry)
 
         grid = OccupancyGrid()

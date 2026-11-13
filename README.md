@@ -124,4 +124,5 @@ Bare metal runs in the foreground. Ctrl+C stops the launch and lets GLIM save to
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | `lidar_z`, camera mount, Nav2/GLIM/nvblox settings, laptop networking, clocks |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | data flow, what starts, measured performance, known limits, repo layout |
 | [`docs/TESTING.md`](docs/TESTING.md) | hardware-free tests |
+| [`docs/HITL.md`](docs/HITL.md) | Isaac Sim on the DGX, the stack on the Orin, over a switch |
 | [`AGENTS.md`](AGENTS.md) | invariants for AI agents and reviewers |

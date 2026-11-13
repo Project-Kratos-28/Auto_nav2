@@ -50,6 +50,9 @@ docker/run_container.sh 'PCD2PGM_SETUP=$PWD/install/setup.bash bash src/pcd2pgm/
   publishes no pose TF.
 - **nvblox maps in `odom`, and `nvblox_layer` is in the local costmap only** (GLIM's loop closures
   move `map → odom`).
+  It comes before `traversability_layer`, which is `authoritative: true` there: rated terrain
+  replaces nvblox's cells (its fixed height band marks every ramp as a wall), nvblox counts only
+  where the terrain is unknown.
 - **GLIM runs without its OpenGL viewer when there is no display** (`kratos.launch.py` writes a
   config copy without `libstandard_viewer.so`); with the viewer and no display it crashes at start.
   `librviz_viewer.so` must stay: it publishes `/glim_ros/map`.

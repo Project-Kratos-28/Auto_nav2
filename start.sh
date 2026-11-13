@@ -57,6 +57,11 @@ running() {
     docker ps --format '{{.Names}}' | grep -qx "$NAME" \
         && docker exec "$NAME" pgrep -f '[r]os2 launch kratos_bringup' >/dev/null
 }
+if docker ps --format '{{.Names}}' | grep -qx "$NAME" \
+        && docker exec "$NAME" pgrep -f '[r]os2 launch athena_nav_sim' >/dev/null; then
+    echo 'A HITL run (tools/hitl_orin.sh) is using the container: tools/hitl_orin.sh stop first.' >&2
+    exit 1
+fi
 if running; then
     echo "The stack is already running (./stop.sh stops it). Showing its log."
     [ "$FOLLOW" = 1 ] && exec "$REPO/logs.sh"

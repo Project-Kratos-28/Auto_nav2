@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Isaac Sim + rover bringup + Nav2 (this repo's kratos_nav: RotationShim + MPPI), all in one.
 #
-#   tools/isaac_nav2_sim.sh [up] [--glim] [--no-rviz] [--flat] [--no-zed]
+#   tools/isaac_nav2_sim.sh [up] [--glim] [--no-rviz] [--no-logs] [--flat] [--no-zed] [--stream]
 #                                                       start Isaac (scene loaded, Play pressed),
-#                                                       bringup and Nav2, then check them
+#                                                       bringup and Nav2, check them, then follow
+#                                                       Nav2's log (Ctrl+C ends the log, not the sim)
 #   tools/isaac_nav2_sim.sh goal 5.0,1.8 -2.0,1.5       send waypoints (map frame; see send_waypoints)
 #   tools/isaac_nav2_sim.sh goal --relative 2,0         2 m ahead of the rover
-#   tools/isaac_nav2_sim.sh goal gates                  four gates, north ramp, two trench goals
+#   tools/isaac_nav2_sim.sh goal gates                  the full route: crater, terrace, ramp deck, trench, hilltop, boulders
 #   tools/isaac_nav2_sim.sh rviz                        open RViz on a running stack (map, costmaps, plan)
 #   tools/isaac_nav2_sim.sh status                      check /clock, Nav2 and the controller
 #   tools/isaac_nav2_sim.sh logs                        follow Nav2's log
@@ -14,6 +15,7 @@
 #
 #   --glim      GLIM SLAM localization instead of Isaac's ground-truth odometry (not tested with MPPI)
 #   --no-rviz   no RViz (default: RViz when there is a display)
+#   --no-logs   up returns after its checks instead of following Nav2's log
 #   --no-zed    LiDAR only. Default: also a depth camera at the ZED 2i's mount (110 deg, Isaac
 #               renders it: the ZED SDK does not run on this machine). Its points go to the
 #               traversability mapper (terrain, both costmaps) with the LiDAR's; its depth image to
@@ -22,6 +24,15 @@
 #               ($NVBLOX_WS, see Auto_Isaac_Sim/docker/Dockerfile.nvblox), else it is left out.
 #   --flat      the old flat scene with boxes (default: the IRC arena, generated on first use by
 #               Auto_Isaac_Sim/scripts/make_irc_arena.py: hills, ramps, craters, a trench, rocks, gates)
+#   --stream[=ADDR]  headless Isaac, streamed over WebRTC (as Auto_Isaac_Sim/scripts/dgx.sh does) on
+#               ADDR (default: this machine's Tailscale IPv4; e.g. --stream=10.8.1.157 for the LAN).
+#               Connect the Isaac Sim WebRTC Streaming Client to ADDR (TCP 49100, UDP 47998); one
+#               viewer at a time. Needs no DISPLAY; laptops can run RViz with scripts/client.sh.
+#               tools/isaac_nav2_stream.sh is this script with --stream on.
+#   --orin=ADDR hardware in the loop (docs/HITL.md): only Isaac, the swerve controller and RViz run
+#               here; Nav2, the terrain mapper, nvblox (and GLIM) run on the Orin at ADDR (its IP on
+#               the switch), started there with tools/hitl_orin.sh. goal, status and stop remember
+#               ADDR until the next up. --glim is then chosen on the Orin, not here.
 #
 # Needs the Isaac Sim build, ~/Kratos/Auto_Isaac_Sim (scene, athena_nav_sim), ~/athena_ws and
 # ~/kratos_gui_ws built (see Auto_Isaac_Sim/docs/SETUP_FROM_SCRATCH.md). kratos_nav is built from
@@ -57,18 +68,38 @@ export ATHENA_SCENE="$ARENA/athena_irc.usda"
 # layer's job, so the band stays clear of it.
 NVBLOX_SLICE_MIN=-0.15
 ZED=true
+FOLLOW_LOGS=true
+ORIN_IP=""
+STREAM=false
+STREAM_IP=""
 args=()
 for a in "$@"; do
     case "$a" in
         --glim)    LOCALIZATION=glim ;;
         --no-rviz) RVIZ=false ;;
+        --no-logs) FOLLOW_LOGS=false ;;
         --no-zed)  ZED=false ;;
         --flat)    ATHENA_SCENE="$FLAT_SCENE" ;;
+        --stream)  STREAM=true ;;
+        --stream=*) STREAM=true; STREAM_IP=${a#--stream=} ;;
+        --orin=*)  ORIN_IP=${a#--orin=}; [[ -n $ORIN_IP ]] || fail "--orin needs an address: --orin=192.168.1.10" ;;
+        --orin)    fail "--orin needs an address: --orin=192.168.1.10" ;;
         *)         args+=("$a") ;;
     esac
 done
 set -- "${args[@]+"${args[@]}"}"
 CMD="${1:-up}"; shift || true
+# HITL: up writes the Orin's address here; the other commands read it (a plain up removes it).
+HITL_FILE="$LOGS/hitl_orin_ip"
+[[ -z $ORIN_IP && $CMD != up && -f $HITL_FILE ]] && ORIN_IP=$(cat "$HITL_FILE")
+
+# ROS network settings (scripts/ros_env.sh: Tailscale peers for the laptops), plus the Orin.
+net_env() {
+    set +u
+    source "$SIM_REPO/scripts/ros_env.sh"
+    [[ -n $ORIN_IP ]] && export ROS_STATIC_PEERS="$ORIN_IP${ROS_STATIC_PEERS:+;$ROS_STATIC_PEERS}"
+    set -u
+}
 
 ros_env() {
     set +u
@@ -78,8 +109,8 @@ ros_env() {
     source "$MPPI_WS/install/setup.bash"
     [[ -f "$NVBLOX_WS/install/setup.bash" ]] && source "$NVBLOX_WS/install/setup.bash"
     [[ $LOCALIZATION == glim ]] && source "$GLIM_OVERLAY"   # patched glim_ros, must be last
-    source "$SIM_REPO/scripts/ros_env.sh"
     set -u
+    net_env
 }
 
 # Each part runs in its own process group (setsid), so stop can end all of it.
@@ -146,7 +177,46 @@ start_nvblox() {
                  sim_config:=/sim_src/athena_zed_nav/config/nvblox_sim.yaml slice_min:=$NVBLOX_SLICE_MIN" > /dev/null
 }
 
+# Nav2's log, live, without the TF noise. $1: lines of history to start with.
+follow_logs() {
+    tail -n "$1" -F "$LOGS/nav.log" | grep --line-buffered -vE "TF_OLD_DATA|Possible reasons are listed"
+}
+
 clock_ticking() { timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1; }
+nav2_up() { ros2 action list 2>/dev/null | grep -qx /navigate_through_poses; }
+
+start_rviz() {
+    stop_group rviz 5
+    start_group rviz ros2 run rviz2 rviz2 -d "$(ros2 pkg prefix athena_nav_sim)/share/athena_nav_sim/rviz/nav_sim.rviz" \
+        --ros-args -r __node:=rviz2_nav_sim -p use_sim_time:=true
+    say "RViz started (log: $LOGS/rviz.log)"
+}
+
+# HITL, after Isaac and bringup are up: wait for the Orin's Nav2, check it, open RViz here.
+# $1: this machine's address on the switch (what the Orin's --sim= must be).
+hitl_wait() {
+    cat <<EOF
+
+  Sim side is up. On the Orin ($ORIN_IP), from the Auto_nav2 checkout:
+      tools/hitl_orin.sh up --sim=$1          (add --glim for GLIM SLAM, --no-zed for LiDAR only)
+  Restart it there after every Stop/Play in Isaac (sim time starts again at 0).
+
+EOF
+    say "waiting up to 15 min for Nav2 from the Orin"
+    local i
+    for ((i = 0; i < 900; i += 5)); do nav2_up && break; sleep 5; done
+    nav2_up || fail "no Nav2 from the Orin after 15 min; Isaac keeps running (tools/hitl_orin.sh logs on the Orin)"
+    sleep 5   # Nav2's lifecycle manager activates the nodes after the actions appear
+    say "checking"
+    if check; then say "all up"; else warn "some checks failed: on the Orin, tools/hitl_orin.sh logs"; fi
+    [[ $RVIZ == true ]] && start_rviz
+    cat <<EOF
+
+  Send goals:   $0 goal gates   (or 5.0,1.8, --relative 2,0, or 2D Goal Pose in RViz)
+  Nav2 log:     on the Orin, tools/hitl_orin.sh logs
+  Stop:         tools/hitl_orin.sh stop on the Orin, then $0 stop here
+EOF
+}
 
 check() {
     local ok=0 ctrl
@@ -168,14 +238,34 @@ check() {
 up() {
     [[ -x "$ISAAC_DIR/isaac-sim.sh" ]] || fail "Isaac Sim not found at $ISAAC_DIR (set ISAAC_DIR)"
     [[ -f "$FLAT_SCENE" ]] || fail "scene missing: $FLAT_SCENE (set SIM_REPO)"
-    [[ -n "${DISPLAY:-}" ]] || fail "no DISPLAY: Isaac Sim opens a window (run from the desktop)"
+    if [[ $STREAM == true ]]; then
+        [[ -x "$ISAAC_DIR/isaac-sim.streaming.sh" ]] || fail "no isaac-sim.streaming.sh in $ISAAC_DIR"
+        STREAM_IP=${STREAM_IP:-$(tailscale ip -4 2>/dev/null | head -1)}
+        [[ -n $STREAM_IP ]] || fail "--stream: no Tailscale IPv4 (sudo tailscale up), or pass --stream=ADDR"
+        if ! ip -4 -o addr show | grep -qw "inet $STREAM_IP"; then
+            warn "$STREAM_IP is not an address of this machine: the stream only works behind NAT/port forwarding"
+        elif systemctl is-active --quiet ufw && ! ip -4 -o addr show dev tailscale0 2>/dev/null | grep -qw "inet $STREAM_IP"; then
+            warn "ufw is on; if the client can't connect: sudo ufw allow 49100/tcp && sudo ufw allow 47998/udp"
+        fi
+    else
+        [[ -n "${DISPLAY:-}" ]] || fail "no DISPLAY: Isaac Sim opens a window (run from the desktop, or use --stream)"
+    fi
     [[ $LOCALIZATION != glim || -f $GLIM_OVERLAY ]] || fail "--glim needs the patched glim_ros overlay: $GLIM_OVERLAY"
+    local sim_ip=""
+    if [[ -n $ORIN_IP ]]; then
+        ping -c 1 -W 2 "$ORIN_IP" > /dev/null 2>&1 || fail "Orin $ORIN_IP does not answer ping (cable, switch, IPs on one subnet?)"
+        sim_ip=$(ip -4 route get "$ORIN_IP" | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+        [[ $(ip -4 route get "$ORIN_IP") == *tailscale* ]] \
+            && warn "the route to $ORIN_IP goes over Tailscale, not the switch: point clouds will be slow"
+        [[ $LOCALIZATION == glim ]] && warn "--glim has no effect with --orin: pass it to tools/hitl_orin.sh on the Orin"
+    fi
     if stack_running; then
         warn "parts of the sim stack are already running (an Isaac window, bringup or Nav2):"
         pgrep -af "$STACK" | cut -c1-140
         fail "save your Isaac work, then run: $0 stop"
     fi
     mkdir -p "$LOGS"
+    if [[ -n $ORIN_IP ]]; then echo "$ORIN_IP" > "$HITL_FILE"; else rm -f "$HITL_FILE"; fi
     build_mppi
     build_arena
     [[ -f "$ATHENA_SCENE" ]] || fail "scene missing: $ATHENA_SCENE"
@@ -189,24 +279,39 @@ up() {
         # (local costmap) reads the depth image.
         export ATHENA_KEEP_LIDAR=1 ATHENA_CAM_WIDTH=320 ATHENA_CAM_HEIGHT=180 ATHENA_CAM_CLOUD=1
         camera_cloud=/sim_camera/depth/points
-        if [[ -d "$NVBLOX_WS/install/nvblox_nav2" || -d /opt/ros/jazzy/share/nvblox_nav2 ]]; then
+        if [[ -n $ORIN_IP ]]; then
+            :   # nvblox runs on the Orin
+        elif [[ -d "$NVBLOX_WS/install/nvblox_nav2" || -d /opt/ros/jazzy/share/nvblox_nav2 ]]; then
             nvblox=true
         else
             warn "no nvblox_nav2 costmap plugin (build it into $NVBLOX_WS): no nvblox layer"
         fi
     fi
-    (set +u; source "$SIM_REPO/scripts/ros_env.sh"; set -u
-     cd "$ISAAC_DIR" && start_group isaac ./isaac-sim.sh --exec "$SIM_REPO/scripts/$isaac_script")
+    local isaac_cmd=(./isaac-sim.sh)
+    if [[ $STREAM == true ]]; then
+        isaac_cmd=(./isaac-sim.streaming.sh
+            --/exts/omni.kit.livestream.app/primaryStream/publicIp="$STREAM_IP"
+            --/exts/omni.kit.livestream.app/primaryStream/signalPort=49100
+            --/exts/omni.kit.livestream.app/primaryStream/streamPort=47998)
+        say "streaming over WebRTC on $STREAM_IP (connect once the scene is playing)"
+    fi
+    (net_env; cd "$ISAAC_DIR" && start_group isaac "${isaac_cmd[@]}" --exec "$SIM_REPO/scripts/$isaac_script")
     ros_env
     ros2 daemon stop > /dev/null 2>&1
     wait_for 300 "Isaac to load the scene and press Play" \
         grep -q -E "\[autoplay\] timeline playing|open_stage .*ok=False" "$LOGS/isaac.log"
     grep -q "ok=False" "$LOGS/isaac.log" && fail "Isaac could not open $ATHENA_SCENE"
     wait_for 60 "/clock" clock_ticking
+    [[ $STREAM == true ]] && say "scene playing: WebRTC Streaming Client -> server $STREAM_IP"
 
     say "starting bringup (log: $LOGS/bringup.log)"
     start_group bringup ros2 launch athena_controller bringup.launch.py rviz:=false
     sleep 6
+
+    if [[ -n $ORIN_IP ]]; then
+        hitl_wait "$sim_ip"
+        return
+    fi
 
     if [[ $nvblox == true ]]; then
         say "starting nvblox (docker logs $NVBLOX_CONTAINER)"
@@ -224,7 +329,7 @@ up() {
     if check; then say "all up"; else warn "some checks failed, see $LOGS"; fi
     cat <<EOF
 
-  Send goals:   $0 goal gates              (four gates, north ramp, two trench goals)
+  Send goals:   $0 goal gates              (the full route: crater, terrace, ramp deck, trench, hilltop, boulders)
                 $0 goal 5.0,1.8            (map frame)
                 $0 goal -2.0,1.5 0,0
                 $0 goal --relative 2,0     (rover frame)
@@ -232,6 +337,16 @@ up() {
   Nav2 log:     $0 logs
   Stop:         $0 stop
 EOF
+    [[ $STREAM == true ]] && cat <<EOF
+  Video:        Isaac Sim WebRTC Streaming Client, server $STREAM_IP (one viewer at a time;
+                reconnect after Isaac restarts)
+  Laptop RViz:  ~/client.sh   (Auto_Isaac_Sim/scripts/client.sh, any laptop on the tailnet)
+EOF
+    # Only on a terminal: a script or pipe calling up must get control back.
+    if [[ $FOLLOW_LOGS == true && -t 1 ]]; then
+        say "Nav2 log follows (Ctrl+C ends the log, the sim keeps running; send goals from another terminal)"
+        follow_logs 0
+    fi
 }
 
 down() {
@@ -255,6 +370,10 @@ down() {
     command -v fastdds > /dev/null && fastdds shm clean > /dev/null 2>&1
     if stack_running; then warn "still running:"; pgrep -af "$STACK" | cut -c1-140; return 1; fi
     say "stopped"
+    if [[ -n $ORIN_IP ]]; then
+        rm -f "$HITL_FILE"
+        say "HITL: the Orin's side keeps running until tools/hitl_orin.sh stop there"
+    fi
 }
 
 case "$CMD" in
@@ -266,12 +385,10 @@ case "$CMD" in
             fi
             exec ros2 run athena_nav_sim send_waypoints "$@" ;;
     rviz)   ros_env; [[ -n "${DISPLAY:-}" ]] || fail "no DISPLAY"
-            mkdir -p "$LOGS"; stop_group rviz 5
-            start_group rviz ros2 run rviz2 rviz2 -d "$(ros2 pkg prefix athena_nav_sim)/share/athena_nav_sim/rviz/nav_sim.rviz" \
-                --ros-args -r __node:=rviz2_nav_sim -p use_sim_time:=true
-            say "RViz started (log: $LOGS/rviz.log)" ;;
+            mkdir -p "$LOGS"; start_rviz ;;
     status) ros_env; check ;;
-    logs)   tail -n 200 -F "$LOGS/nav.log" | grep --line-buffered -vE "TF_OLD_DATA|Possible reasons are listed" ;;
+    logs)   [[ -z $ORIN_IP ]] || fail "HITL: Nav2 runs on the Orin ($ORIN_IP): tools/hitl_orin.sh logs there"
+            follow_logs 200 ;;
     stop|down) ros_env; down ;;
-    *)      sed -n '2,31p' "$0"; exit 2 ;;
+    *)      sed -n '2,38p' "$0"; exit 2 ;;
 esac

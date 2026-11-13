@@ -45,6 +45,11 @@ public:
     declareParameter("grid_topic", rclcpp::ParameterValue(std::string("/traversability/grid")));
     declareParameter("transform_tolerance", rclcpp::ParameterValue(0.5));
     declareParameter("update_radius", rclcpp::ParameterValue(15.0));
+    // true: where the grid has a rating, it replaces what the layers before this one wrote
+    // (a fixed height band such as nvblox's slice marks every ramp and hill as an obstacle; the
+    // terrain rating knows better). Those layers still count where the terrain is unknown.
+    declareParameter("authoritative", rclcpp::ParameterValue(false));
+    node->get_parameter(name_ + ".authoritative", authoritative_);
     node->get_parameter(name_ + ".update_radius", update_radius_);
     node->get_parameter(name_ + ".enabled", enabled_);
     std::string topic;
@@ -133,7 +138,7 @@ public:
         const unsigned char cost = v >= 100 ? nav2_costmap_2d::LETHAL_OBSTACLE :
           static_cast<unsigned char>(std::lround(v * 2.52));
         unsigned char & old = costs[j * size_x + i];
-        if (old == nav2_costmap_2d::NO_INFORMATION || cost > old) {
+        if (authoritative_ || old == nav2_costmap_2d::NO_INFORMATION || cost > old) {
           old = cost;
         }
       }
@@ -147,6 +152,7 @@ private:
   std::mutex mutex_;
   tf2::Duration tolerance_;
   bool have_tf_{false};
+  bool authoritative_{false};
   double tx_{0}, ty_{0}, c_{1}, s_{0};
 };
 
