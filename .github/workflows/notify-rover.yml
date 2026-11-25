@@ -1,0 +1,22 @@
+# Copy into each child repo (Auto_nav2, Auto_Cams, ...) as
+# .github/workflows/notify-rover.yml
+# Requires a repo secret ROVER_DISPATCH_TOKEN: a PAT (or GitHub App token) with
+# permission to trigger workflows on Project-Kratos-28/kratos-rover.
+name: Notify kratos-rover
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to kratos-rover
+        env:
+          GH_TOKEN: ${{ secrets.ROVER_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/Project-Kratos-28/kratos-rover/dispatches \
+            -f event_type=child-updated \
+            -f 'client_payload[repo]=${{ github.repository }}' \
+            -f 'client_payload[sha]=${{ github.sha }}'
